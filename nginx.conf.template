@@ -38,22 +38,52 @@ http {
                 end
                 local cjson = require "cjson.safe"
                 local req = cjson.decode(data)
-                if not req or not req["redirect_uris"] then
+                if not req then
                     ngx.status = 400
-                    ngx.say("Missing redirect_uris in registration request")
+                    ngx.say("Malformed JSON in registration request")
                     return
                 end
-                local dict = ngx.shared.allowed_uris
-                local valid = true
-                for _, uri in ipairs(req["redirect_uris"]) do
-                    if not dict:get(uri) then
-                        valid = false
-                        break
+                local grant_types = req["grant_types"]
+                if not grant_types or type(grant_types) ~= "table" then
+                    ngx.status = 400
+                    ngx.say("Missing or invalid grant_types in registration request")
+                    return
+                end
+                local has_auth_code = false
+                local has_device_code = false
+                for _, gt in ipairs(grant_types) do
+                    if gt == "authorization_code" then
+                        has_auth_code = true
+                    elseif gt == "urn:ietf:params:oauth:grant-type:device_code" then
+                        has_device_code = true
                     end
                 end
-                if not valid then
+                if has_auth_code then
+                    -- For auth code flow, validate redirect_uris
+                    if not req["redirect_uris"] then
+                        ngx.status = 400
+                        ngx.say("Missing redirect_uris in registration request for authorization_code flow")
+                        return
+                    end
+                    local dict = ngx.shared.allowed_uris
+                    local valid = true
+                    for _, uri in ipairs(req["redirect_uris"]) do
+                        if not dict:get(uri) then
+                            valid = false
+                            break
+                        end
+                    end
+                    if not valid then
+                        ngx.status = 400
+                        ngx.say("Invalid redirect_uri for authorization_code flow")
+                        return
+                    end
+                elseif has_device_code and not has_auth_code then
+                    -- Device code only: do not constrain redirect_uris
+                    -- No validation needed
+                else
                     ngx.status = 400
-                    ngx.say("Invalid redirect_uri")
+                    ngx.say("Unsupported grant_types. Only authorization_code and device_code flows are allowed.")
                     return
                 end
                 -- Pass to proxy handler
